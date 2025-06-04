@@ -12,40 +12,34 @@ export default function Orb({ onExplode }: OrbProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
   const [clicked, setClicked] = useState(false);
+  const [frozen, setFrozen] = useState(false);
   const [distortLevel, setDistortLevel] = useState(0.3);
   const [metalness, setMetalness] = useState(0.9);
   const [roughness, setRoughness] = useState(0.1);
+  const [emissiveIntensity, setEmissiveIntensity] = useState(0.5);
+  const timelineRef = useRef<gsap.core.Timeline | null>(null);
+  const animatingRef = useRef(false);
+  const [exploding, setExploding] = useState(false);
+  const initialScaleRef = useRef({ x: 1, y: 1, z: 1 });
 
   const { camera, size } = useThree();
   const perspectiveCamera = camera as THREE.PerspectiveCamera;
   const desiredPixelSize = 500; // diameter in px
-
-  // Use a fixed world radius for the geometry
   const baseWorldRadius = 1.2;
 
   // Animate the orb
   useFrame((state) => {
-    if (!clicked && meshRef.current) {
+    if (!clicked && !frozen && meshRef.current) {
       // Keep the orb's projected size at 500px
-      // Project the orb's position to screen space
       const vector = meshRef.current.position.clone();
       vector.project(camera);
-
-      // Calculate distance from camera to orb
       const distance = camera.position.distanceTo(meshRef.current.position);
-
-      // Calculate visible height at that distance
       const vFOV = (perspectiveCamera.fov * Math.PI) / 180;
       const visibleHeight = 2 * Math.tan(vFOV / 2) * distance;
       const worldPerPixel = visibleHeight / size.height;
       const targetWorldRadius = (desiredPixelSize * worldPerPixel) / 2;
-
-      // Set the scale so the sphere appears as 500px diameter
       meshRef.current.scale.setScalar(targetWorldRadius / baseWorldRadius);
-
-      // Animate rotation
-      meshRef.current.rotation.x =
-        Math.sin(state.clock.getElapsedTime() * 0.3) * 0.1;
+      meshRef.current.rotation.x = Math.sin(state.clock.getElapsedTime() * 0.3) * 0.1;
       meshRef.current.rotation.y += 0.003;
     }
   });
@@ -67,8 +61,6 @@ export default function Orb({ onExplode }: OrbProps) {
           duration: 0.8,
         });
       }
-      
-      // Animate distortLevel with GSAP for smoother transition
       const distortTween = { value: distortLevel };
       gsap.to(distortTween, {
         value: 0.5,
@@ -88,7 +80,6 @@ export default function Orb({ onExplode }: OrbProps) {
         });
       }
       if (!clicked) {
-        // Animate distortLevel back with GSAP
         const distortTween = { value: distortLevel };
         gsap.to(distortTween, {
           value: 0.3,
@@ -101,74 +92,125 @@ export default function Orb({ onExplode }: OrbProps) {
   }, [hovered, clicked, distortLevel]);
 
   useEffect(() => {
-    if (clicked && meshRef.current) {
-      // Set metalness to 0 and increase roughness when exploding
-      const materialTween = { metalness: 0.9, roughness: 0.1 };
-      gsap.to(materialTween, {
-        metalness: 0,
+    return () => {
+      if (timelineRef.current) {
+        timelineRef.current.kill();
+      }
+    };
+  }, []);
+
+  const handleClick = () => {
+    if (!clicked && !animatingRef.current && meshRef.current) {
+      // Lock the scale and freeze before any animation
+      setClicked(true);
+      setFrozen(true);
+      animatingRef.current = true;
+      setExploding(true);
+
+      // Store the initial scale at the moment of click
+      const currentScale = {
+        x: meshRef.current.scale.x,
+        y: meshRef.current.scale.y,
+        z: meshRef.current.scale.z
+      };
+      initialScaleRef.current = currentScale;
+      meshRef.current.scale.set(currentScale.x, currentScale.y, currentScale.z);
+
+      // Calculate the world radius needed to cover the screen diagonal
+      const distance = camera.position.distanceTo(meshRef.current.position);
+      const vFOV = (perspectiveCamera.fov * Math.PI) / 180;
+      const visibleHeight = 2 * Math.tan(vFOV / 2) * distance;
+      const visibleWidth = visibleHeight * (size.width / size.height);
+      const screenDiagonal = Math.sqrt(visibleWidth ** 2 + visibleHeight ** 2);
+      // Add a buffer so the orb always covers the corners
+      const buffer = 1.12; // 12% extra
+      const neededWorldRadius = (screenDiagonal / 2) * buffer;
+      let targetScale = neededWorldRadius / baseWorldRadius;
+      // Clamp so the orb never engulfs the camera (surface stays at least margin in front of near plane)
+      const margin = 0.15; // 15% of the distance between near and orb
+      const minSurfaceDist = perspectiveCamera.near + (distance - perspectiveCamera.near) * margin;
+      const maxSafeRadius = distance - minSurfaceDist;
+      const maxSafeScale = maxSafeRadius / baseWorldRadius;
+      if (targetScale > maxSafeScale) targetScale = maxSafeScale;
+      // If targetScale is negative or zero, clamp to current scale
+      if (targetScale <= 0) targetScale = Math.max(currentScale.x, 1);
+
+      // Create tweens
+      const distortTween = { value: distortLevel };
+      const materialTween = { metalness, roughness };
+      const emissiveTween = { value: emissiveIntensity };
+
+      const timeline = gsap.timeline({
+        defaults: { ease: "sine.inOut" },
+        onComplete: () => {
+          if (meshRef.current) {
+            meshRef.current.visible = false;
+          }
+          animatingRef.current = false;
+          setExploding(false);
+        }
+      });
+      timelineRef.current = timeline;
+
+      // Animate from the current scale to the target scale (absolute, not relative)
+      timeline.to(meshRef.current.scale, {
+        x: targetScale,
+        y: targetScale * 0.97,
+        z: targetScale * 1.04,
+        duration: 2.5,
+        ease: "sine.inOut"
+      });
+      // Animate distortion and material
+      timeline.to(distortTween, {
+        value: 1.2,
+        duration: 2.5,
+        ease: "sine.inOut",
+        onUpdate: () => setDistortLevel(distortTween.value)
+      }, 0);
+      timeline.to(materialTween, {
+        metalness: 0.4,
         roughness: 0.5,
-        duration: 0.3,
+        duration: 2.5,
+        ease: "sine.inOut",
         onUpdate: () => {
           setMetalness(materialTween.metalness);
           setRoughness(materialTween.roughness);
         }
-      });
-
-      // Phase 1: Initial expansion
-      gsap.to(meshRef.current.scale, {
-        x: meshRef.current.scale.x * 3.0,
-        y: meshRef.current.scale.y * 3.0,
-        z: meshRef.current.scale.z * 3.0,
-        duration: 0.3,
-        ease: "power1.inOut",
-      });
-
-      // Animate distort level
-      const distortTween = { value: distortLevel };
-      gsap.to(distortTween, {
+      }, 0);
+      timeline.to(emissiveTween, {
         value: 1.2,
-        duration: 0.3,
-        onUpdate: () => setDistortLevel(distortTween.value),
+        duration: 2.5,
+        ease: "sine.inOut",
+        onUpdate: () => setEmissiveIntensity(emissiveTween.value),
+        onComplete: () => {
+          onExplode();
+        }
+      }, 0);
+      // Fade out
+      timeline.to(emissiveTween, {
+        value: 0,
+        duration: 1.2,
+        ease: "sine.out",
+        onUpdate: () => setEmissiveIntensity(emissiveTween.value)
       });
-
-      // Phase 2: Violent distortion before collapse
-      const distortTween2 = { value: 1.2 };
-      gsap
-        .timeline({ delay: 0.4 })
-        .to(distortTween2, {
-          value: 2.5,
-          duration: 0.4,
-          onUpdate: () => setDistortLevel(distortTween2.value),
-        })
-        .to(meshRef.current.scale, {
-          x: meshRef.current.scale.x * 5.0,
-          y: meshRef.current.scale.y * 5.0,
-          z: meshRef.current.scale.z * 5.0,
-          duration: 0.3,
-          ease: "power2.out",
-        })
-        .to(meshRef.current.scale, {
-          x: 0,
-          y: 0,
-          z: 0,
-          duration: 0.6,
-          delay: 0.2,
-          ease: "power4.in",
-          onComplete: () => {
-            onExplode();
-            if (meshRef.current) {
-              meshRef.current.visible = false;
-            }
-          },
-        });
+      timeline.to(materialTween, {
+        metalness: 0.1,
+        roughness: 0.7,
+        duration: 1.2,
+        ease: "sine.out",
+        onUpdate: () => {
+          setMetalness(materialTween.metalness);
+          setRoughness(materialTween.roughness);
+        }
+      }, "+=0");
     }
-  }, [clicked, onExplode, distortLevel]);
+  };
 
   return (
     <Sphere
       args={[baseWorldRadius, 64, 64]}
       ref={meshRef}
-      onClick={() => !clicked && setClicked(true)}
+      onClick={handleClick}
       onPointerOver={() => setHovered(true)}
       onPointerOut={() => setHovered(false)}
     >
@@ -180,7 +222,7 @@ export default function Orb({ onExplode }: OrbProps) {
         roughness={roughness}
         metalness={metalness}
         emissive={"#714DD7"}
-        emissiveIntensity={clicked ? 1 : 0.5}
+        emissiveIntensity={emissiveIntensity}
       />
     </Sphere>
   );

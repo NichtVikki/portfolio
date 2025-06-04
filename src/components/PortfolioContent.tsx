@@ -1,9 +1,11 @@
 import { useEffect, useState, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 
 export default function PortfolioContent() {
   const [visible, setVisible] = useState(false);
   const [scrollProgress, setScrollProgress] = useState(0);
   const contentRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
   
   useEffect(() => {
     // Delay showing content slightly for better visual effect
@@ -100,6 +102,7 @@ export default function PortfolioContent() {
                     hover:bg-[#5a3bb5] hover:scale-105
                     shadow-md
                     "
+                    onClick={() => router.push('/projects')}
                 >
                     see my work
                 </button>
@@ -112,6 +115,7 @@ export default function PortfolioContent() {
                     hover:bg-[#333] hover:text-white hover:scale-105
                     shadow-md
                     "
+                    onClick={() => router.push('/contact')}
                 >
                     let's talk
                 </button>
